@@ -1,0 +1,294 @@
+name: 苦労BAR 活動日自動更新
+
+on:
+  schedule:
+    - cron: '30 7 19 * *'
+      timezone: Asia/Tokyo
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '確認だけ実行し、GitHubのデータを書き換えない'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kurobar-activity-schedule
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      FUJIMINO_USER_ID_1: ${{ secrets.FUJIMINO_USER_ID_1 }}
+      FUJIMINO_PASSWORD_1: ${{ secrets.FUJIMINO_PASSWORD_1 }}
+      FUJIMINO_USER_ID_2: ${{ secrets.FUJIMINO_USER_ID_2 }}
+      FUJIMINO_PASSWORD_2: ${{ secrets.FUJIMINO_PASSWORD_2 }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Playwright 準備
+        run: |
+          npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: 本予約の確認と活動日JSONの照合
+        run: |
+          cat > sync.cjs <<'KUROBAR_JS'
+          'use strict';
+          // 苦労BAR GitHub Actions 活動日更新: Scriptable v6.2 の読み取り条件を移植
+          // 予約の申込・変更・取消処理は存在しません。
+          const { chromium } = require('playwright');
+          const BASE = 'https://yoyacool.e-harp.jp/fujimino';
+          const API = 'https://api.github.com/repos/onihata/kurobar-site/contents/activity-schedule.json';
+          const DRY_RUN = process.env.DRY_RUN === 'true';
+          const ACCOUNTS = [
+            ['ID①', process.env.FUJIMINO_USER_ID_1, process.env.FUJIMINO_PASSWORD_1],
+            ['ID②', process.env.FUJIMINO_USER_ID_2, process.env.FUJIMINO_PASSWORD_2],
+          ];
+          const TOKEN = process.env.GITHUB_TOKEN;
+          const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+          const jpParts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+          const value = name => jpParts.find(p => p.type === name).value;
+          const TODAY = `${value('year')}-${value('month')}-${value('day')}`;
+          function assert(ok, message) { if (!ok) throw new Error(message); }
+          function key(x) { return [x.date, x.time, x.place, x.court].join('|'); }
+          function canon(list) {
+            assert(Array.isArray(list), 'DATA_NOT_ARRAY');
+            const arr = list.map(x => {
+              assert(x && /^20\d{2}-\d{2}-\d{2}$/.test(x.date) &&
+                /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(x.time) &&
+                typeof x.place === 'string' && x.place &&
+                typeof x.court === 'string' && x.court, 'ACTIVITY_FORMAT_INVALID');
+              return { date: x.date, time: x.time, place: x.place, court: x.court };
+            }).sort((a, b) => key(a).localeCompare(key(b), 'ja'));
+            assert(new Set(arr.map(key)).size === arr.length, 'DUPLICATE_ACTIVITY');
+            return arr;
+          }
+          function publicItem(x) {
+            const parts = x.place.split('/').map(s => s.trim());
+            assert(parts.length >= 3 && parts[1] === 'アリーナ', 'UNKNOWN_PLACE_FORMAT');
+            const place = parts[0], court = parts.slice(2).join('/');
+            assert(place && court, 'EMPTY_PLACE_OR_COURT');
+            return { date: x.date, time: x.time, place, court };
+          }
+          const headers = { Authorization: `Bearer ${TOKEN}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Cache-Control': 'no-cache' };
+          async function github(method, payload) {
+            const response = await fetch(API + (method === 'GET' ? '?ref=main' : ''), {
+              method, headers: { ...headers, ...(method === 'PUT' ? { 'Content-Type': 'application/json' } : {}) },
+              ...(payload ? { body: JSON.stringify(payload) } : {}), signal: AbortSignal.timeout(30000)
+            });
+            const raw = await response.text();
+            assert(response.status === 200, `GITHUB_${method}_HTTP_${response.status}`);
+            return JSON.parse(raw);
+          }
+          async function getFile() {
+            const f = await github('GET');
+            assert(f.sha && f.encoding === 'base64' && typeof f.content === 'string', 'GITHUB_FILE_FORMAT_INVALID');
+            const data = JSON.parse(Buffer.from(f.content.replace(/\s/g, ''), 'base64').toString('utf8'));
+            assert(data.site === '苦労BAR' && data.timezone === 'Asia/Tokyo', 'GITHUB_JSON_UNEXPECTED');
+            return { sha: f.sha, activities: canon(data.activities) };
+          }
+          async function login(page, name, user, pass) {
+            await page.goto(BASE + '/Login', { waitUntil: 'domcontentloaded' });
+            const id = page.locator('input[name="userId"]');
+            const pw = page.locator('input[name="password"]');
+            await id.waitFor({ state: 'visible' });
+            await pw.waitFor({ state: 'visible' });
+            await id.fill(user);
+            await pw.fill(pass);
+            await pw.press('Tab');
+            await page.waitForFunction(() => {
+              const form = document.querySelector('input[name="password"]')?.closest('form');
+              const vm = form?.__vue__;
+              if (!vm || typeof vm.validate !== 'function') return false;
+              return vm.validate() === true && vm.value === true && form.checkValidity();
+            }, null, { timeout: 15000 });
+            const buttons = page.locator('button.success.is-main').filter({ hasText: 'ログイン' });
+            assert(await buttons.count() === 1, `${name}:LOGIN_BUTTON_NOT_UNIQUE`);
+            await buttons.click();
+            await page.waitForFunction(() => [...document.querySelectorAll('a[href]')].some(a =>
+              /ログアウト|logout/i.test((a.innerText || '') + ' ' + (a.getAttribute('href') || ''))), null, { timeout: 35000 });
+            console.log(`${name} ログイン：SUCCESS`);
+          }
+          async function logout(page, name) {
+            const state = await page.evaluate(() => {
+              const links = [...document.querySelectorAll('a[href]')].filter(a => {
+                if (!/ログアウト|logout/i.test((a.innerText || '') + ' ' + (a.getAttribute('href') || ''))) return false;
+                try { const url = new URL(a.href, location.href); return url.origin === location.origin && url.pathname.startsWith('/fujimino/'); }
+                catch (_) { return false; }
+              });
+              const uniq = [...new Map(links.map(a => [a.href, a])).values()];
+              if (uniq.length !== 1) return `LOGOUT_LINK_${uniq.length}`;
+              uniq[0].click();
+              return 'LOGOUT_CLICKED';
+            });
+            assert(state === 'LOGOUT_CLICKED', `${name}:${state}`);
+            await page.waitForFunction(() => ![...document.querySelectorAll('a[href]')].some(a =>
+              /ログアウト|logout/i.test((a.innerText || '') + ' ' + (a.getAttribute('href') || ''))), null, { timeout: 20000 });
+            console.log(`${name} ログアウト：SUCCESS`);
+          }
+          async function selectBookingsFilter(page, name) {
+            const opened = await page.evaluate(() => {
+              const norm = s => String(s || '').replace(/\s+/g, '');
+              const buttons = [...document.querySelectorAll('button')].filter(b => b.getClientRects().length > 0 && norm(b.innerText || b.textContent).includes('申込状態'));
+              if (buttons.length !== 1) return `FILTER_BUTTON_${buttons.length}`;
+              buttons[0].click(); return 'FILTER_OPENED';
+            });
+            assert(opened === 'FILTER_OPENED', `${name}:${opened}`);
+            await pause(1800);
+            const selected = await page.evaluate(() => {
+              const norm = s => String(s || '').replace(/\s+/g, '');
+              const candidates = [...document.querySelectorAll('button,a,label,[role="button"],[role="option"]')]
+                .filter(e => e.getClientRects().length > 0)
+                .filter(e => { const t = norm(e.innerText || e.textContent); return t.includes('本予約') && !t.includes('仮予約') && t.length <= 30; });
+              if (candidates.length !== 1) return `FILTER_OPTION_${candidates.length}`;
+              candidates[0].click(); return 'FILTER_SELECTED';
+            });
+            assert(selected === 'FILTER_SELECTED', `${name}:${selected}`);
+            await pause(2000);
+          }
+          async function sortBookings(page, name) {
+            const isSorted = () => page.evaluate(() => {
+              const norm = s => String(s || '').normalize('NFKC').replace(/\s+/g, '');
+              const vis = e => e.getClientRects().length > 0;
+              const inputs = [...document.querySelectorAll('input')].filter(vis).map(e => norm(e.value || ''));
+              const slots = [...document.querySelectorAll('.v-select__slot,.v-input__slot')].filter(vis)
+                .map(e => norm(e.innerText || e.textContent || '')).filter(t => t.includes('利用日直近順') && t.length < 75);
+              return inputs.includes('利用日直近順') || slots.length === 1;
+            });
+            if (await isSorted()) return;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              const opened = await page.evaluate(() => {
+                const norm = s => String(s || '').normalize('NFKC').replace(/\s+/g, '');
+                const all = [...document.querySelectorAll('button,div,span,select,input,[role="combobox"],[role="button"]')].filter(e => e.getClientRects().length > 0);
+                const cs = all.filter(e => { const t = norm(e.innerText || e.textContent || e.value); return /申込日最新順|利用日直近順|更新順/.test(t) && t.length < 75; });
+                const deepest = cs.filter(e => !cs.some(other => other !== e && e.contains(other)));
+                if (deepest.length !== 1) return `SORT_CONTROL_${deepest.length}`;
+                const target = deepest[0].closest('[role="combobox"],.v-select__slot,.v-input__slot,button,[role="button"]') || deepest[0];
+                target.click(); return 'SORT_OPENED';
+              });
+              assert(opened === 'SORT_OPENED', `${name}:${opened}`);
+              await pause(1600);
+              const selected = await page.evaluate(() => {
+                const norm = s => String(s || '').normalize('NFKC').replace(/\s+/g, '');
+                const all = [...document.querySelectorAll('button,a,li,div,span,[role="option"]')].filter(e => e.getClientRects().length > 0);
+                const cs = all.filter(e => norm(e.innerText || e.textContent) === '利用日直近順');
+                const deepest = cs.filter(e => !cs.some(other => other !== e && e.contains(other)));
+                if (deepest.length !== 1) return `SORT_OPTION_${deepest.length}`;
+                const target = deepest[0].closest('.v-list-item,[role="option"],li,button,a') || deepest[0];
+                target.click(); return 'SORT_SELECTED';
+              });
+              assert(selected === 'SORT_SELECTED', `${name}:${selected}`);
+              await pause(1700);
+              if (await isSorted()) return;
+            }
+            throw new Error(`${name}:SORT_FAILED`);
+          }
+          async function readBookings(page, name) {
+            const result = await page.evaluate(today => {
+              const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+              const filterOK = [...document.querySelectorAll('button')].some(b => { const t = norm(b.innerText || b.textContent); return t.includes('申込状態') && t.includes('本予約'); });
+              const vis = e => e.getClientRects().length > 0;
+              const vals = [...document.querySelectorAll('input')].filter(vis).map(e => String(e.value || '').normalize('NFKC').replace(/\s+/g, ''));
+              const slots = [...document.querySelectorAll('.v-select__slot,.v-input__slot')].filter(vis).map(e => String(e.innerText || e.textContent || '').normalize('NFKC').replace(/\s+/g, '')).filter(t => t.includes('利用日直近順') && t.length < 75);
+              const sortOK = vals.includes('利用日直近順') || slots.length === 1;
+              const dateRE = /20\d{2}\/\d{1,2}\/\d{1,2}/;
+              const timeRE = /\d{1,2}:\d{2}\s*[-－〜～]\s*\d{1,2}:\d{2}/;
+              const links = [...document.querySelectorAll('a')].filter(a => /体育館|運動公園/.test(a.innerText || ''));
+              const items = [], seen = new Set();
+              for (const a of links) {
+                let card = null;
+                for (let p = a.parentElement; p && p !== document.body; p = p.parentElement) {
+                  const t = norm(p.innerText);
+                  if (t.length < 750 && dateRE.test(t) && timeRE.test(t) && t.includes('本予約')) { card = p; break; }
+                }
+                if (!card) continue;
+                const t = norm(card.innerText), raw = t.match(dateRE)?.[0], rawTime = t.match(timeRE)?.[0];
+                if (!raw || !rawTime) continue;
+                const d = raw.split('/');
+                const date = `${d[0]}-${d[1].padStart(2, '0')}-${d[2].padStart(2, '0')}`;
+                const time = rawTime.replace(/[－〜～]/g, '-').replace(/\s/g, '');
+                const place = norm(String(a.innerText || '').split(/場所[:：]/).pop());
+                if (!place) continue;
+                const k = `${date}|${time}|${place}`;
+                if (!seen.has(k)) { seen.add(k); items.push({ date, time, place }); }
+              }
+              const future = items.filter(x => x.date >= today).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+              const match = (document.body?.innerText || '').match(/(\d+)\s*件\s*うち/);
+              return { filterOK, sortOK, total: match ? Number(match[1]) : null, visible: items.length, future };
+            }, TODAY);
+            console.log(`${name} 本予約総件数：${result.total}／読み取り：${result.visible}`);
+            assert(result.filterOK && result.sortOK, `${name}:FILTER_OR_SORT_NOT_CONFIRMED`);
+            assert(result.total !== null && result.total === result.visible, `${name}:PAGINATION_REQUIRED`);
+            console.log(`${name} 未来の本予約：${result.future.length}`);
+            return result.future;
+          }
+          async function accountBookings(browser, [name, user, pass]) {
+            assert(user && pass, `${name}:SECRET_MISSING`);
+            console.log(`----- ${name} -----`);
+            const context = await browser.newContext({ locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
+            const page = await context.newPage();
+            page.setDefaultTimeout(20000);
+            try {
+              await login(page, name, user, pass);
+              await page.goto(BASE + '/RequestStatuses/Index', { waitUntil: 'domcontentloaded' });
+              assert(new URL(page.url()).pathname === '/fujimino/RequestStatuses/Index', `${name}:STATUS_PAGE_NOT_FOUND`);
+              await pause(1500);
+              await selectBookingsFilter(page, name);
+              await sortBookings(page, name);
+              const bookings = await readBookings(page, name);
+              await logout(page, name);
+              return bookings;
+            } finally { await context.close(); }
+          }
+          async function main() {
+            assert(process.env.GITHUB_REPOSITORY === 'onihata/kurobar-site', 'UNEXPECTED_REPOSITORY');
+            assert(TOKEN, 'GITHUB_TOKEN_MISSING');
+            console.log(`=== 苦労BAR GitHub Actions (v6.2準拠) ===`);
+            console.log(`今日：${TODAY}／ドライラン：${DRY_RUN}`);
+            let browser;
+            const all = [];
+            try {
+              browser = await chromium.launch({ headless: true });
+              for (const account of ACCOUNTS) all.push(...await accountBookings(browser, account));
+            } finally { if (browser) await browser.close(); }
+            const unique = new Map();
+            for (const x of all) { const k = `${x.date}|${x.time}|${x.place}`; if (!unique.has(k)) unique.set(k, x); }
+            const current = canon([...unique.values()].map(publicItem));
+            console.log(`予約統合：${all.length}件 → ${current.length}件`);
+            const previous = await getFile();
+            console.log(`GitHub保存済み：${previous.activities.length}件`);
+            if (JSON.stringify(current) === JSON.stringify(previous.activities)) {
+              console.log('照合結果：MATCH／状態：SUCCESS_NO_CHANGE'); return;
+            }
+            const oldKeys = new Set(previous.activities.map(key));
+            const newKeys = new Set(current.map(key));
+            const added = current.filter(x => !oldKeys.has(key(x)));
+            const removed = previous.activities.filter(x => !newKeys.has(key(x)));
+            console.log(`照合結果：DIFFERENT／追加：${added.length}件／削除または終了：${removed.length}件`);
+            console.log('追加予定：' + JSON.stringify(added));
+            console.log('一覧から外れる予定：' + JSON.stringify(removed));
+            assert(!(current.length === 0 && previous.activities.length > 0), 'EMPTY_SCHEDULE_REQUIRES_REVIEW');
+            if (DRY_RUN) { console.log('状態：DRY_RUN_NO_WRITE'); return; }
+            const next = { site: '苦労BAR', timezone: 'Asia/Tokyo', updatedAt: new Date().toISOString(), activities: current };
+            const put = await github('PUT', { message: 'Update KuroBAR activity schedule', content: Buffer.from(JSON.stringify(next, null, 2) + '\n').toString('base64'), sha: previous.sha, branch: 'main' });
+            assert(put.content?.sha, 'GITHUB_UPDATE_SHA_MISSING');
+            await pause(1500);
+            const verify = await getFile();
+            assert(verify.sha === put.content.sha && JSON.stringify(verify.activities) === JSON.stringify(current), 'GITHUB_VERIFY_MISMATCH');
+            console.log('更新後の照合：MATCH／状態：SUCCESS_UPDATED');
+          }
+          main().catch(err => { console.error('状態：INCOMPLETE／診断エラー：' + String(err.message || err)); process.exitCode = 1; });
+          KUROBAR_JS
+          node sync.cjs
