@@ -477,6 +477,17 @@ a,button{touch-action:manipulation}
     padding-bottom: 5px!important;
   }
 }
+
+/* v16.6: Four menu signboards slightly flatter, keeping original artwork,
+   labels, clickable links, activity schedule and SEO introduction intact. */
+#kb15-home .kb15-navpart img {
+  height: clamp(64px, 18.4vw, 80px)!important;
+  object-fit: fill;
+}
+/* Keep all four clickable hotspots across the resized artwork. */
+#kb15-home .kb15-navpart nav {
+  inset: 7% 2% 5%;
+}
 </style><!-- Google Analytics 4: page-view measurement -->
 <script async="" src="https://www.googletagmanager.com/gtag/js?id=G-BS604C51MS"></script>
 <script>
