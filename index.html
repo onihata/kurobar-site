@@ -449,6 +449,34 @@ a,button{touch-action:manipulation}
 @media (max-height: 700px) {
   #kb15-home .kb15-stage { padding-bottom: 88px; }
 }
+
+/* v16.5: Raise the existing four menu buttons without changing the font sizes,
+   approved illustrations, SEO copy, activity data or other pages. */
+#kb15-home .kb15-schedule {
+  flex: 0 0 auto!important;
+  padding: 5px 3% 6px!important;
+}
+#kb15-home #schedule-live { gap: 5px!important; }
+#kb15-home .schedule-row {
+  height: clamp(44px, 5.9svh, 48px)!important;
+  min-height: 44px!important;
+}
+#kb15-home .kb15-more-wrap button {
+  margin-top: 6px!important;
+  padding-top: 7px!important;
+  padding-bottom: 7px!important;
+}
+/* Small phones retain comfortable rows; a short scroll still reveals the menu. */
+@media (max-height: 700px) {
+  #kb15-home .kb15-schedule { padding: 4px 3% 5px!important; }
+  #kb15-home .schedule-row { height: 40px!important; min-height: 40px!important; }
+  #kb15-home #schedule-live { gap: 4px!important; }
+  #kb15-home .kb15-more-wrap button {
+    margin-top: 5px!important;
+    padding-top: 5px!important;
+    padding-bottom: 5px!important;
+  }
+}
 </style><!-- Google Analytics 4: page-view measurement -->
 <script async="" src="https://www.googletagmanager.com/gtag/js?id=G-BS604C51MS"></script>
 <script>
