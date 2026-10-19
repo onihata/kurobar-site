@@ -433,6 +433,22 @@ a,button{touch-action:manipulation}
   #kb15-home .schedule-row .date{font-size:clamp(13px,4.15vw,15px)!important}
   #kb15-home .schedule-row .place.long{font-size:10px!important}
 }
+
+/* v16.4: Safari用トップ終端の調整。
+   活動予定の文字・行高と既存画像は変更しない。
+   4メニューの下に木目の余裕を確保し、Safari下部操作バーと重なる場合も
+   少しスクロールすると4メニュー全体が見えるようにする。
+   SEOの紹介文は通常のHTMLテキストとしてその次のスクロール位置に残す。 */
+#kb15-home .kb15-stage {
+  min-height: 100svh;
+  min-height: 100dvh;
+  padding-bottom: clamp(98px, 14svh, 140px);
+}
+/* タップ領域の上に透過レイヤーを追加せず、メニュー操作を維持。 */
+#kb15-home .kb15-navpart { z-index: 1; }
+@media (max-height: 700px) {
+  #kb15-home .kb15-stage { padding-bottom: 88px; }
+}
 </style><!-- Google Analytics 4: page-view measurement -->
 <script async="" src="https://www.googletagmanager.com/gtag/js?id=G-BS604C51MS"></script>
 <script>
