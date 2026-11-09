@@ -48,6 +48,7 @@
   // 読み込み時のページを送信。30分以内の重複はサーバー側でまとめる。
   const params = new URLSearchParams({id: visitorId, page: pageLabel(), device: deviceLabel(), timestamp: String(Date.now())});
   if (query.get('src') === 'netmember') params.set('page', 'サークル募集経由／' + pageLabel());
+  if (query.get('src') === 'linegroup') params.set('page', 'グループLINE経由／' + pageLabel());
   const pixel = new Image(1, 1);
   window.__kurobarVisitPixel = pixel;
   pixel.onload = pixel.onerror = () => { window.__kurobarVisitPixel = null; };
