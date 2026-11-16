@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.github.com; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="robots" content="noindex,nofollow,noarchive">
+<title>苦労BAR｜管理室</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;color-scheme:light}
+*{box-sizing:border-box}body{margin:0;background:#f6f0e4;color:#392317;font-size:16px;padding-bottom:40px}
+header{padding:22px 16px;background:#4d2716;color:#fff4d9;text-align:center;box-shadow:0 3px 7px #0002}
+header h1{font-size:24px;margin:0 0 5px}header p{font-size:13px;margin:0}
+main{max-width:530px;margin:0 auto;padding:16px 12px}section{background:white;border:1px solid #dbc6ac;border-radius:15px;margin-bottom:14px;padding:16px;box-shadow:0 2px 3px #41270b13}
+h2{font-size:19px;margin:0 0 14px}.small{font-size:12px;color:#70594a;line-height:1.55;margin:8px 0}
+label{display:block;font-weight:700;margin:12px 0 6px}
+input,select,textarea{width:100%;border:1px solid #b9a696;border-radius:9px;background:white;color:#271a12;padding:12px;font-size:16px;min-height:45px}
+textarea{min-height:85px;resize:vertical;line-height:1.5}
+.pills{display:flex;gap:6px}.pills button{flex:1;background:#eee3d5;color:#4d382d;border:2px solid #c0a995;border-radius:9px;font-size:16px;font-weight:800;padding:12px 5px;cursor:pointer}.pills button.active{background:#60371f;color:white;border-color:#60371f}
+.row{display:flex;gap:8px;align-items:center}.row>div{flex:1}.row label{font-size:13px}
+.btn{display:block;width:100%;border:0;border-radius:10px;padding:14px;font-size:17px;font-weight:800;color:white;background:#22733c;cursor:pointer;margin-top:10px}.btn:disabled{background:#aaa;cursor:not-allowed}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px solid #eaa01d}
+.preview{background:#fff3d4;border:1px solid #d8b67e;border-radius:9px;padding:12px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+#status{font-size:14px;line-height:1.6;margin:10px 0;white-space:pre-wrap}#status[data-type=error]{color:#aa221c}#status[data-type=ok]{color:#156e37}
+.link{color:#165da5;text-decoration:underline}footer{text-align:center;color:#745e4b;font-size:12px;padding:12px}
+</style>
+</head>
+<body>
+<header><h1>🏸 苦労BAR 管理室</h1><p>新規募集・活動時間・お知らせ</p></header>
+<main>
+<section><h2>① 新規メンバー募集</h2>
+<div class="pills" role="group" aria-label="新規メンバー募集状態"><button id="open" type="button">募集中 ON</button><button id="closed" type="button">募集停止 OFF</button></div>
+<p class="small">募集を停止しても、活動予定は残します。</p></section>
+<section><h2>② 活動日の変更</h2>
+<label for="event">変更する日付</label><select id="event"></select>
+<div class="row"><div><label for="start">開始時間</label><input id="start" type="time" step="900"></div><div><label for="end">終了時間</label><input id="end" type="time" step="900"></div></div>
+<label for="notice">この日の特別なお知らせ</label><textarea id="notice" maxlength="250" placeholder="例：サークル忘年会のため短縮開催"></textarea>
+<p class="small">体育館予約の時間は変更しません。公開ホームページに表示する時間だけを変更します。</p>
+</section>
+<section><h2>③ 公開前の確認</h2><div id="preview" class="preview" aria-live="polite">読み込み中…</div></section>
+<section><h2>④ 保存する</h2>
+<label for="token">GitHubの編集用アクセストークン</label><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_... または ghp_...">
+<p class="small">GitHubの「onihata/kurobar-site」だけにContentsの書き込み権限を与えたトークンを使用します。入力値はこの画面を開いている間だけ使用し、保存・送信先以外への共有はしません。公開ページのURLを知っている人も画面を閲覧できる可能性はありますが、書き込みには権限が必要です。</p>
+<button id="save" class="btn" type="button">設定をGitHubに保存</button>
+<p id="status" role="status"></p></section>
+</main><footer>苦労BAR 管理専用 · 一般向けホームページとは別の画面</footer>
+<script>
+(()=>{'use strict';
+const OWNER='onihata', REPO='kurobar-site', FILE='site-settings.json';
+const $=id=>document.getElementById(id);
+let settings=null, dates=[], selectedDate='', originalEvent=null, busy=false;
+const api=`https://api.github.com/repos/${OWNER}/${REPO}/contents/${FILE}`;
+const setStatus=(msg,type='')=>{ $('status').textContent=msg; $('status').dataset.type=type; };
+const safeText=(s)=>String(s??'');
+const timePattern=/^([01]\d|2[0-3]):[0-5]\d$/;
+const asActivity=x=>x&&typeof x.date==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(x.date)&&typeof x.time==='string'&&typeof x.place==='string';
+const asConfig=x=>x&&typeof x==='object'&&!Array.isArray(x)&&typeof x.recruitmentOpen==='boolean'&&x.activityOverrides&&typeof x.activityOverrides==='object'&&!Array.isArray(x.activityOverrides);
+const today=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+const currentTime=(event)=>event?.time?.split('-') || ['15:00','18:00'];
+const getEvent=(date)=>dates.find(x=>x.date===date);
+function updatePreview(){
+ if(!settings)return;
+ const status=settings.recruitmentOpen?'新規メンバー募集中':'新規メンバー募集を一時休止中';
+ const date=selectedDate, place=getEvent(date)?.place||'';
+ const start=$('start').value, end=$('end').value, note=$('notice').value.trim();
+ $('preview').textContent=`【募集】${status}\n【活動】${date}　${place}\n【時間】${start}〜${end}${note?'\n【お知らせ】'+note:''}`;
+ $('open').classList.toggle('active',settings.recruitmentOpen);
+ $('closed').classList.toggle('active',!settings.recruitmentOpen);
+ $('open').setAttribute('aria-pressed',String(settings.recruitmentOpen));
+ $('closed').setAttribute('aria-pressed',String(!settings.recruitmentOpen));
+}
+function loadEvent(date){
+ selectedDate=date; const entry=getEvent(date);
+ originalEvent=entry;
+ const saved=settings.activityOverrides[date]||{};
+ const [start,end]=String(saved.time||entry?.time||'15:00-18:00').split('-');
+ $('start').value=timePattern.test(start)?start:'15:00';
+ $('end').value=timePattern.test(end)?end:'18:00';
+ $('notice').value=safeText(saved.notice);
+ updatePreview();
+}
+async function initialize(){
+ try{
+ const nonce=Date.now();
+ const [cfgRes,datesRes]=await Promise.all([fetch(`${FILE}?v=${nonce}`,{cache:'no-store'}),fetch(`activity-schedule.json?v=${nonce}`,{cache:'no-store'})]);
+ if(!cfgRes.ok||!datesRes.ok)throw Error(`設定を読めません（${cfgRes.status} / ${datesRes.status}）`);
+ const cfg=await cfgRes.json(),data=await datesRes.json();
+ if(!asConfig(cfg)||!Array.isArray(data.activities))throw Error('設定の形式が正しくありません。');
+ settings=cfg;
+ const currentDate=today();
+ dates=data.activities.filter(asActivity).filter(a=>a.date>=currentDate);
+ // Retain dated manual overrides even when the auto-generated schedule omits them.
+ for(const date of Object.keys(cfg.activityOverrides))if(date>=currentDate&&!dates.some(a=>a.date===date))dates.push({date,time:cfg.activityOverrides[date].time||'15:00-18:00',place:'活動予定要確認'});
+ dates.sort((a,b)=>a.date.localeCompare(b.date));
+ $('event').replaceChildren();
+ for(const d of dates){const opt=new Option(`${d.date}（${d.place}）`,d.date);$('event').add(opt);}
+ if(!dates.length)throw Error('今後の活動日が登録されていません。');
+ const preferred=dates.find(x=>x.date==='2026-12-12')?.date||dates[0].date;
+ $('event').value=preferred;loadEvent(preferred);
+ setStatus('設定を読み込みました。変更後に「設定をGitHubに保存」を押してください。','ok');
+ }catch(e){setStatus('読み込みに失敗しました。公開サイト上の管理画面から開いてください。\n'+e.message,'error');}
+}
+$('open').addEventListener('click',()=>{if(settings){settings.recruitmentOpen=true;updatePreview();}});
+$('closed').addEventListener('click',()=>{if(settings){settings.recruitmentOpen=false;updatePreview();}});
+$('event').addEventListener('change',()=>{if(settings)loadEvent($('event').value);});
+for(const id of ['start','end','notice'])$(id).addEventListener('input',updatePreview);
+function encodeUTF8(s){const bytes=new TextEncoder().encode(s);let binary='';for(let i=0;i<bytes.length;i+=16384)binary+=String.fromCharCode(...bytes.subarray(i,i+16384));return btoa(binary);}
+async function save(){
+ if(busy||!settings)return;
+ const token=$('token').value.trim();
+ if(!token){setStatus('GitHubの編集用アクセストークンを入力してください。','error');return;}
+ const start=$('start').value,end=$('end').value,notice=$('notice').value.trim();
+ if(!timePattern.test(start)||!timePattern.test(end)||end<=start){setStatus('開始時間より遅い終了時間を入力してください。','error');return;}
+ const newConfig=JSON.parse(JSON.stringify(settings));
+ const originalTime=originalEvent?.time||'15:00-18:00';
+ if(`${start}-${end}`===originalTime&&!notice)delete newConfig.activityOverrides[selectedDate];
+ else newConfig.activityOverrides[selectedDate]={time:`${start}-${end}`,notice};
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)){setStatus('活動日が不正です。','error');return;}
+ busy=true;$('save').disabled=true;setStatus('GitHubに保存中…');
+ try{
+ const headers={'Accept':'application/vnd.github+json','Authorization':'Bearer '+token,'X-GitHub-Api-Version':'2022-11-28'};
+ const get=await fetch(api+'?ref=main',{headers,cache:'no-store'});
+ if(!get.ok)throw Error(get.status===401?'認証できません。トークンを確認してください。':get.status===403?'このリポジトリへの編集権限がありません。':`GitHubの読取に失敗（${get.status}）`);
+ const current=await get.json();
+ if(!current.sha||!current.content)throw Error('保存前のファイル情報が不正です。');
+ const remote=JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(current.content.replace(/\s/g,'')),c=>c.charCodeAt(0))));
+ if(!asConfig(remote))throw Error('GitHubの設定データの形式が想定外です。');
+ // Preserve changes made since page load for dates other than the selected day.
+ remote.recruitmentOpen=newConfig.recruitmentOpen;
+ if(newConfig.activityOverrides[selectedDate])remote.activityOverrides[selectedDate]=newConfig.activityOverrides[selectedDate];
+ else delete remote.activityOverrides[selectedDate];
+ const body={message:'Update KuroBAR management settings',content:encodeUTF8(JSON.stringify(remote,null,2)+'\n'),sha:current.sha,branch:'main'};
+ const result=await fetch(api,{method:'PUT',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(body)});
+ if(!result.ok){const status=result.status;throw Error(status===409?'ほかの更新と重なりました。もう一度保存してください。':status===403?'編集権限がありません。':`保存エラー（${status}）`);}
+ settings=remote;
+ setStatus('保存できました！ 公開ホームページの反映設定が完了していれば、更新後の表示に反映されます。','ok');
+ }catch(e){setStatus('保存できませんでした：'+e.message,'error');}
+ finally{busy=false;$('save').disabled=false;}
+}
+$('save').addEventListener('click',save);
+initialize();
+})();
+</script>
+</body></html>
