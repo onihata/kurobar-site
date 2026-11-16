@@ -1,0 +1,10 @@
+
+{
+  "recruitmentOpen": true,
+  "activityOverrides": {
+    "2026-12-12": {
+      "time": "15:00-17:00",
+      "notice": "サークル忘年会のため短縮開催"
+    }
+  }
+}
